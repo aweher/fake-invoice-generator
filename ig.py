@@ -4,8 +4,9 @@ import random
 import logging
 import configparser
 from datetime import datetime, timedelta
+from io import BytesIO
 from faker import Faker
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -37,43 +38,50 @@ def read_s3_config(config_file: str = 's3.ini') -> Dict[str, str]:
         'region': config['s3'].get('region')
     }
 
-def upload_to_s3(file_path: str, bucket: str = None, s3_key: str = None, **kwargs) -> bool:
+def upload_to_s3(file_obj: Union[str, BytesIO], bucket: str = None, s3_key: str = None, **kwargs) -> bool:
     """
-    Upload a file to S3 bucket with custom configuration
+    Upload a file or bytes to S3 bucket
     """
     if bucket is None:
         bucket = kwargs.pop('bucket')
         
     if s3_key is None:
-        s3_key = os.path.basename(file_path)
+        s3_key = os.path.basename(file_obj) if isinstance(file_obj, str) else s3_key
     
-    # Create S3 client with minimal required configuration
     client_config = {
         'endpoint_url': kwargs.get('endpoint'),
         'aws_access_key_id': kwargs.get('aws_access_key_id'),
         'aws_secret_access_key': kwargs.get('aws_secret_access_key')
     }
     
-    # Only add region if specified
     if kwargs.get('region'):
         client_config['region_name'] = kwargs['region']
     
     s3_client = boto3.client('s3', **client_config)
     
     try:
-        s3_client.upload_file(file_path, bucket, s3_key)
-        logger.info(f"Successfully uploaded {file_path} to s3://{bucket}/{s3_key}")
+        if isinstance(file_obj, BytesIO):
+            s3_client.put_object(Bucket=bucket, Key=s3_key, Body=file_obj.getvalue())
+        else:
+            s3_client.upload_file(file_obj, bucket, s3_key)
+        logger.info(f"Successfully uploaded to s3://{bucket}/{s3_key}")
         return True
     except ClientError as e:
-        logger.error(f"Failed to upload {file_path} to S3: {str(e)}")
+        logger.error(f"Failed to upload to S3: {str(e)}")
         return False
 
-
-def generate_invoice(company_name: str, output_dir: str, invoice_number: str) -> str:
-    if not company_name or not output_dir or not invoice_number:
+def generate_invoice(company_name: str, output_dir: str, invoice_number: str, in_memory: bool = False) -> Union[str, BytesIO]:
+    if not company_name or not invoice_number:
         raise ValueError("Required parameters cannot be empty")
-    if not os.path.isdir(output_dir):
-        raise ValueError("Output directory must be valid")
+    if not in_memory and (not output_dir or not os.path.isdir(output_dir)):
+        raise ValueError("Output directory must be valid when not in memory mode")
+
+    # Create buffer for in-memory PDF
+    buffer = BytesIO() if in_memory else None
+    filename = os.path.join(output_dir, f"factura_{invoice_number}.pdf") if not in_memory else None
+    
+    # Use buffer or filename depending on mode
+    doc = SimpleDocTemplate(buffer if in_memory else filename, pagesize=letter)
 
     # Generar datos aleatorios
     customer_name = fake.company()
@@ -96,10 +104,6 @@ def generate_invoice(company_name: str, output_dir: str, invoice_number: str) ->
     tax_rate = random.choice(tax_rates)
     tax = round(subtotal * tax_rate, 2)
     total = round(subtotal + tax, 2)
-
-    # Crear PDF
-    filename = os.path.join(output_dir, f"factura_{invoice_number}.pdf")
-    doc = SimpleDocTemplate(filename, pagesize=letter)
 
     styles = getSampleStyleSheet()
     elements = []
@@ -159,8 +163,12 @@ def generate_invoice(company_name: str, output_dir: str, invoice_number: str) ->
     elements.append(total_table)
 
     doc.build(elements)
-    return filename
     
+    if in_memory:
+        buffer.seek(0)
+        return buffer
+    return filename
+
 def main():
     parser = argparse.ArgumentParser(description='Generador de facturas PDF')
     parser.add_argument('empresa', type=str, help='Nombre de la empresa que emite las facturas')
@@ -179,8 +187,9 @@ def main():
         s3_config = read_s3_config('s3.ini')
         logger.info("S3 configuration loaded - uploads enabled")
 
-    # Crear directorio si no existe
-    os.makedirs(args.directorio, exist_ok=True)
+    # Crear directorio si no existe y S3 está deshabilitado
+    if not s3_config.get('bucket') or args.disable_s3:
+        os.makedirs(args.directorio, exist_ok=True)
 
     # Generar número inicial aleatorio de 16 dígitos
     max_start = 10**16 - args.cantidad
@@ -193,13 +202,20 @@ def main():
     for i in range(args.cantidad):
         current_number = start + i
         formatted_number = f"{current_number:016d}"
-        filename = generate_invoice(args.empresa, args.directorio, formatted_number)
-        logger.info(f"Factura generada: {filename}")
         
-        # Upload to S3 if configuration exists
-        if s3_config.get('bucket'):
-            s3_key = f"{args.s3_prefix}{os.path.basename(filename)}"
-            upload_to_s3(filename, **s3_config, s3_key=s3_key)
+        # Generate in memory if S3 enabled, otherwise save to disk
+        result = generate_invoice(
+            args.empresa, 
+            args.directorio, 
+            formatted_number,
+            in_memory=(s3_config.get('bucket') and not args.disable_s3)
+        )
+        
+        if s3_config.get('bucket') and not args.disable_s3:
+            s3_key = f"{args.s3_prefix}factura_{formatted_number}.pdf"
+            upload_to_s3(result, **s3_config, s3_key=s3_key)
+        else:
+            logger.info(f"Factura generada: {result}")
 
 if __name__ == "__main__":
     main()
