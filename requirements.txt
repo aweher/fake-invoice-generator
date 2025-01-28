@@ -1,0 +1,7 @@
+chardet==5.2.0
+Faker==35.0.0
+pillow==11.1.0
+python-dateutil==2.9.0.post0
+reportlab==4.2.5
+six==1.17.0
+typing_extensions==4.12.2
