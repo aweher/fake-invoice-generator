@@ -175,4 +175,4 @@ cython_debug/
 
 # ASW
 .venv-*
-facturas/
+s3.ini
