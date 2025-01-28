@@ -1,0 +1,6 @@
+[s3]
+bucket = your-bucket-name
+endpoint = https://s3.amazonaws.com
+aws_access_key_id = your-access-key
+aws_secret_access_key = your-secret-key
+region = us-east-1
