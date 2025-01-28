@@ -37,21 +37,28 @@ def read_s3_config(config_file: str = 's3.ini') -> Dict[str, str]:
         'region': config['s3'].get('region')
     }
 
-def upload_to_s3(file_path: str, bucket: str, s3_key: str = None, **kwargs) -> bool:
+def upload_to_s3(file_path: str, bucket: str = None, s3_key: str = None, **kwargs) -> bool:
     """
     Upload a file to S3 bucket with custom configuration
     """
+    if bucket is None:
+        bucket = kwargs.pop('bucket')
+        
     if s3_key is None:
         s3_key = os.path.basename(file_path)
     
-    # Create S3 client with custom configuration
-    s3_client = boto3.client(
-        's3',
-        endpoint_url=kwargs.get('endpoint'),
-        aws_access_key_id=kwargs.get('aws_access_key_id'),
-        aws_secret_access_key=kwargs.get('aws_secret_access_key'),
-        region_name=kwargs.get('region')
-    )
+    # Create S3 client with minimal required configuration
+    client_config = {
+        'endpoint_url': kwargs.get('endpoint'),
+        'aws_access_key_id': kwargs.get('aws_access_key_id'),
+        'aws_secret_access_key': kwargs.get('aws_secret_access_key')
+    }
+    
+    # Only add region if specified
+    if kwargs.get('region'):
+        client_config['region_name'] = kwargs['region']
+    
+    s3_client = boto3.client('s3', **client_config)
     
     try:
         s3_client.upload_file(file_path, bucket, s3_key)
@@ -60,6 +67,7 @@ def upload_to_s3(file_path: str, bucket: str, s3_key: str = None, **kwargs) -> b
     except ClientError as e:
         logger.error(f"Failed to upload {file_path} to S3: {str(e)}")
         return False
+
 
 def generate_invoice(company_name: str, output_dir: str, invoice_number: str) -> str:
     if not company_name or not output_dir or not invoice_number:
@@ -152,30 +160,14 @@ def generate_invoice(company_name: str, output_dir: str, invoice_number: str) ->
 
     doc.build(elements)
     return filename
-
-def upload_to_s3(file_path: str, bucket: str, s3_key: str = None) -> bool:
-    """
-    Upload a file to S3 bucket
-    """
-    if s3_key is None:
-        s3_key = os.path.basename(file_path)
-    
-    s3_client = boto3.client('s3')
-    try:
-        s3_client.upload_file(file_path, bucket, s3_key)
-        logger.info(f"Successfully uploaded {file_path} to s3://{bucket}/{s3_key}")
-        return True
-    except ClientError as e:
-        logger.error(f"Failed to upload {file_path} to S3: {str(e)}")
-        return False
     
 def main():
     parser = argparse.ArgumentParser(description='Generador de facturas PDF')
     parser.add_argument('empresa', type=str, help='Nombre de la empresa que emite las facturas')
     parser.add_argument('cantidad', type=int, help='Cantidad de facturas a generar')
     parser.add_argument('directorio', type=str, help='Directorio de salida para los archivos PDF')
-    parser.add_argument('--s3-prefix', type=str, default='facturas/', 
-                       help='Prefijo para los archivos en S3 (default: facturas/)')
+    parser.add_argument('--s3-prefix', type=str, default='', 
+                       help='Prefijo para los archivos en S3 (default: "")')
     parser.add_argument('--disable-s3', action='store_true',
                        help='Deshabilita la subida a S3 incluso si existe configuración')
 
@@ -207,7 +199,7 @@ def main():
         # Upload to S3 if configuration exists
         if s3_config.get('bucket'):
             s3_key = f"{args.s3_prefix}{os.path.basename(filename)}"
-            upload_to_s3(filename, s3_config['bucket'], s3_key, **s3_config)
+            upload_to_s3(filename, **s3_config, s3_key=s3_key)
 
 if __name__ == "__main__":
     main()
